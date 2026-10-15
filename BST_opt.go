@@ -4,9 +4,73 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
+
+// Node is a binary search tree node.
+type Node struct {
+	val         int
+	left, right *Node
+}
+
+// insert adds v to the BST rooted at non-nil root
+func insert(root *Node, v int) {
+	cur := root
+	for {
+		if v < cur.val {
+			if cur.left == nil {
+				cur.left = &Node{val: v}
+				return
+			}
+			cur = cur.left
+		} else {
+			if cur.right == nil {
+				cur.right = &Node{val: v}
+				return
+			}
+			cur = cur.right
+		}
+	}
+}
+
+// buildTree constructs a BST from vals inserted in order.
+func buildTree(vals []int) *Node {
+	if len(vals) == 0 {
+		return nil
+	}
+	root := &Node{val: vals[0]}
+	for _, v := range vals[1:] {
+		insert(root, v)
+	}
+	return root
+}
+
+// buildRoots constructs one BST per input tree, preserving tree IDs.
+func buildRoots(trees [][]int) []*Node {
+	roots := make([]*Node, len(trees))
+	for i, vals := range trees {
+		roots[i] = buildTree(vals)
+	}
+	return roots
+}
+
+// inorderValues returns the in-order traversal of root.
+func inorderValues(root *Node) []int {
+	var out []int
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		walk(n.left)
+		out = append(out, n.val)
+		walk(n.right)
+	}
+	walk(root)
+	return out
+}
 
 // parseInput reads path and returns one slice of ints per non-empty line.
 // Each line is one BST, values in the order provided.
@@ -52,12 +116,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	roots := buildRoots(trees)
+
 	// Temporary debug guard
 	if os.Getenv("BST_DEBUG") != "" {
 		fmt.Printf("trees=%d\n", len(trees))
 		if len(trees) > 0 {
 			fmt.Printf("first line fields=%d first val=%d\n", len(trees[0]), trees[0][0])
 			fmt.Printf("last line fields=%d last val=%d\n", len(trees[len(trees)-1]), trees[len(trees)-1][len(trees[len(trees)-1])-1])
+		}
+		fmt.Printf("built %d trees\n", len(roots))
+		bad := 0
+		for i, r := range roots {
+			vals := inorderValues(r)
+			if len(vals) != len(trees[i]) || !sort.IntsAreSorted(vals) {
+				fmt.Printf("tree %d in-order INVALID len=%d\n", i, len(vals))
+				bad++
+			}
+		}
+		fmt.Printf("in-order check done, invalid=%d\n", bad)
+		if len(roots) > 0 {
+			fmt.Printf("tree 0 in-order: %v\n", inorderValues(roots[0]))
 		}
 	}
 
