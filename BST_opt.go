@@ -4,9 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Node is a binary search tree node.
@@ -56,20 +56,30 @@ func buildRoots(trees [][]int) []*Node {
 	return roots
 }
 
-// inorderValues returns the in-order traversal of root.
-func inorderValues(root *Node) []int {
-	var out []int
+// inorderHash computes the in-order traversal hash of root.
+func inorderHash(root *Node) int {
+	h := 1
 	var walk func(*Node)
 	walk = func(n *Node) {
 		if n == nil {
 			return
 		}
 		walk(n.left)
-		out = append(out, n.val)
+		nv := n.val + 2
+		h = (h*nv + nv) % 1000
 		walk(n.right)
 	}
 	walk(root)
-	return out
+	return h
+}
+
+// hashAllSequential computes each tree's hash in the main thread.
+func hashAllSequential(roots []*Node) []int {
+	hashes := make([]int, len(roots))
+	for i, r := range roots {
+		hashes[i] = inorderHash(r)
+	}
+	return hashes
 }
 
 // parseInput reads path and returns one slice of ints per non-empty line.
@@ -115,31 +125,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-
 	roots := buildRoots(trees)
 
-	// Temporary debug guard
-	if os.Getenv("BST_DEBUG") != "" {
-		fmt.Printf("trees=%d\n", len(trees))
-		if len(trees) > 0 {
-			fmt.Printf("first line fields=%d first val=%d\n", len(trees[0]), trees[0][0])
-			fmt.Printf("last line fields=%d last val=%d\n", len(trees[len(trees)-1]), trees[len(trees)-1][len(trees[len(trees)-1])-1])
-		}
-		fmt.Printf("built %d trees\n", len(roots))
-		bad := 0
-		for i, r := range roots {
-			vals := inorderValues(r)
-			if len(vals) != len(trees[i]) || !sort.IntsAreSorted(vals) {
-				fmt.Printf("tree %d in-order INVALID len=%d\n", i, len(vals))
-				bad++
-			}
-		}
-		fmt.Printf("in-order check done, invalid=%d\n", bad)
-		if len(roots) > 0 {
-			fmt.Printf("tree 0 in-order: %v\n", inorderValues(roots[0]))
-		}
-	}
+	start := time.Now()
+	hashes := hashAllSequential(roots)
+	hashTime := time.Since(start).Seconds()
+	fmt.Printf("hashTime: %f\n", hashTime)
 
+	_ = hashes
 	_ = hashWorkers
 	_ = dataWorkers
 	_ = compWorkers
