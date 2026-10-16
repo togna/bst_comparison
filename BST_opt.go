@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,6 +109,37 @@ func hashTrees(roots []*Node, workers int) []int {
 	return hashes
 }
 
+// buildGroupsSequential maps each hash to the IDs of trees with that hash,
+// using the main thread only.
+func buildGroupsSequential(hashes []int) map[int][]int {
+	groups := make(map[int][]int)
+	for id, h := range hashes {
+		groups[h] = append(groups[h], id)
+	}
+	return groups
+}
+
+// printHashGroups prints every hash group with more than one tree, sorted by
+// hash and then by ID, in the form "<hash>: <id> <id> ...".
+func printHashGroups(groups map[int][]int) {
+	keys := make([]int, 0, len(groups))
+	for h, ids := range groups {
+		if len(ids) > 1 {
+			keys = append(keys, h)
+		}
+	}
+	sort.Ints(keys)
+	for _, h := range keys {
+		ids := groups[h]
+		sort.Ints(ids)
+		parts := make([]string, len(ids))
+		for i, id := range ids {
+			parts[i] = strconv.Itoa(id)
+		}
+		fmt.Printf("%d: %s\n", h, strings.Join(parts, " "))
+	}
+}
+
 // parseInput reads path and returns one slice of ints per non-empty line.
 // Each line is one BST, values in the order provided.
 func parseInput(path string) ([][]int, error) {
@@ -163,7 +195,11 @@ func main() {
 	hashTime := time.Since(start).Seconds()
 	fmt.Printf("hashTime: %f\n", hashTime)
 
-	_ = hashes
-	_ = dataWorkers
+	if *dataWorkers >= 1 {
+		groups := buildGroupsSequential(hashes)
+		fmt.Printf("hashGroupTime: %f\n", time.Since(start).Seconds())
+		printHashGroups(groups)
+	}
+
 	_ = compWorkers
 }
