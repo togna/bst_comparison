@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,7 +58,7 @@ func buildRoots(trees [][]int) []*Node {
 	return roots
 }
 
-// inorderHash computes the in-order traversal hash of root.
+// inorderHash computes the in-order traversal hash of root
 func inorderHash(root *Node) int {
 	h := 1
 	var walk func(*Node)
@@ -73,12 +75,36 @@ func inorderHash(root *Node) int {
 	return h
 }
 
-// hashAllSequential computes each tree's hash in the main thread.
-func hashAllSequential(roots []*Node) []int {
-	hashes := make([]int, len(roots))
-	for i, r := range roots {
-		hashes[i] = inorderHash(r)
+// hashTrees computes each tree's hash.
+func hashTrees(roots []*Node, workers int) []int {
+	n := len(roots)
+	hashes := make([]int, n)
+	if workers <= 1 || n == 0 {
+		for i, r := range roots {
+			hashes[i] = inorderHash(r)
+		}
+		return hashes
 	}
+	if workers > n {
+		workers = n
+	}
+
+	var next int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(atomic.AddInt64(&next, 1)) - 1
+				if i >= n {
+					return
+				}
+				hashes[i] = inorderHash(roots[i])
+			}
+		}()
+	}
+	wg.Wait()
 	return hashes
 }
 
@@ -127,13 +153,17 @@ func main() {
 	}
 	roots := buildRoots(trees)
 
+	workers := *hashWorkers
+	if workers < 1 {
+		workers = 1
+	}
+
 	start := time.Now()
-	hashes := hashAllSequential(roots)
+	hashes := hashTrees(roots, workers)
 	hashTime := time.Since(start).Seconds()
 	fmt.Printf("hashTime: %f\n", hashTime)
 
 	_ = hashes
-	_ = hashWorkers
 	_ = dataWorkers
 	_ = compWorkers
 }
