@@ -109,6 +109,11 @@ func hashTrees(roots []*Node, workers int) []int {
 	return hashes
 }
 
+// hashPair associates a tree's hash with its ID.
+type hashPair struct {
+	hash, id int
+}
+
 // buildGroupsSequential maps each hash to the IDs of trees with that hash,
 // using the main thread only.
 func buildGroupsSequential(hashes []int) map[int][]int {
@@ -116,6 +121,43 @@ func buildGroupsSequential(hashes []int) map[int][]int {
 	for id, h := range hashes {
 		groups[h] = append(groups[h], id)
 	}
+	return groups
+}
+
+// buildGroupsChannel has `workers` goroutines send (hash, id) pairs to a single
+// manager goroutine that owns and updates the map.
+func buildGroupsChannel(hashes []int, workers int) map[int][]int {
+	n := len(hashes)
+	if workers <= 1 {
+		return buildGroupsSequential(hashes)
+	}
+	if workers > n {
+		workers = n
+	}
+
+	ch := make(chan hashPair)
+	groups := make(map[int][]int)
+	done := make(chan struct{})
+	go func() {
+		for p := range ch {
+			groups[p.hash] = append(groups[p.hash], p.id)
+		}
+		close(done)
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(worker int) {
+			defer wg.Done()
+			for id := worker; id < n; id += workers {
+				ch <- hashPair{hash: hashes[id], id: id}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(ch)
+	<-done
 	return groups
 }
 
@@ -196,7 +238,16 @@ func main() {
 	fmt.Printf("hashTime: %f\n", hashTime)
 
 	if *dataWorkers >= 1 {
-		groups := buildGroupsSequential(hashes)
+		var groups map[int][]int
+		switch {
+		case *hashWorkers <= 1:
+			groups = buildGroupsSequential(hashes)
+		case *dataWorkers == 1:
+			groups = buildGroupsChannel(hashes, *hashWorkers)
+		default:
+			// hash-workers=i, data-workers=i: mutex map (Phase H).
+			groups = buildGroupsSequential(hashes)
+		}
 		fmt.Printf("hashGroupTime: %f\n", time.Since(start).Seconds())
 		printHashGroups(groups)
 	}
