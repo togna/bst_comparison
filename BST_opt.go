@@ -212,6 +212,119 @@ func printHashGroups(groups map[int][]int) {
 	}
 }
 
+// printTreeGroups prints equivalence classes with more than one tree, sorted by
+// their smallest ID, in the form "group <k>: <id> <id> ...".
+func printTreeGroups(classes [][]int) {
+	sort.Slice(classes, func(i, j int) bool { return classes[i][0] < classes[j][0] })
+	k := 0
+	for _, ids := range classes {
+		sort.Ints(ids)
+		parts := make([]string, len(ids))
+		for i, id := range ids {
+			parts[i] = strconv.Itoa(id)
+		}
+		fmt.Printf("group %d: %s\n", k, strings.Join(parts, " "))
+		k++
+	}
+}
+
+// unionFind tracks equivalence classes of tree IDs.
+type unionFind struct {
+	parent []int
+}
+
+func newUnionFind(n int) *unionFind {
+	p := make([]int, n)
+	for i := range p {
+		p[i] = i
+	}
+	return &unionFind{parent: p}
+}
+
+func (u *unionFind) find(x int) int {
+	for u.parent[x] != x {
+		u.parent[x] = u.parent[u.parent[x]]
+		x = u.parent[x]
+	}
+	return x
+}
+
+func (u *unionFind) union(a, b int) {
+	ra, rb := u.find(a), u.find(b)
+	if ra != rb {
+		u.parent[ra] = rb
+	}
+}
+
+// equalTrees reports whether two trees have the same in-order traversal.
+func equalTrees(a, b *Node) bool {
+	var sa, sb []*Node
+	pushLeft := func(stack *[]*Node, n *Node) {
+		for n != nil {
+			*stack = append(*stack, n)
+			n = n.left
+		}
+	}
+	pushLeft(&sa, a)
+	pushLeft(&sb, b)
+	for len(sa) > 0 && len(sb) > 0 {
+		an := sa[len(sa)-1]
+		sa = sa[:len(sa)-1]
+		bn := sb[len(sb)-1]
+		sb = sb[:len(sb)-1]
+		if an.val != bn.val {
+			return false
+		}
+		pushLeft(&sa, an.right)
+		pushLeft(&sb, bn.right)
+	}
+	return len(sa) == 0 && len(sb) == 0
+}
+
+// compareTreesSequential compares all pairs within each multi-tree hash group
+// in the main thread and returns equivalence classes with more than one tree.
+func compareTreesSequential(roots []*Node, groups map[int][]int) [][]int {
+	uf := newUnionFind(len(roots))
+	for _, ids := range groups {
+		if len(ids) < 2 {
+			continue
+		}
+		for i := 0; i < len(ids); i++ {
+			for j := i + 1; j < len(ids); j++ {
+				if equalTrees(roots[ids[i]], roots[ids[j]]) {
+					uf.union(ids[i], ids[j])
+				}
+			}
+		}
+	}
+
+	byRoot := make(map[int][]int)
+	// Collect only IDs that belong to a multi-tree hash group.
+	inGroup := make(map[int]bool)
+	for _, ids := range groups {
+		if len(ids) < 2 {
+			continue
+		}
+		for _, id := range ids {
+			inGroup[id] = true
+		}
+	}
+	for id := range roots {
+		if inGroup[id] {
+			r := uf.find(id)
+			byRoot[r] = append(byRoot[r], id)
+		}
+	}
+
+	var classes [][]int
+	for _, ids := range byRoot {
+		if len(ids) > 1 {
+			classes = append(classes, ids)
+		}
+	}
+	return classes
+}
+
 // parseInput reads path and returns one slice of ints per non-empty line.
 // Each line is one BST, values in the order provided.
 func parseInput(path string) ([][]int, error) {
@@ -267,8 +380,8 @@ func main() {
 	hashTime := time.Since(start).Seconds()
 	fmt.Printf("hashTime: %f\n", hashTime)
 
-	if *dataWorkers >= 1 {
-		var groups map[int][]int
+	var groups map[int][]int
+	if *dataWorkers >= 1 || *compWorkers >= 1 {
 		switch {
 		case *hashWorkers <= 1:
 			groups = buildGroupsSequential(hashes)
@@ -277,9 +390,17 @@ func main() {
 		default:
 			groups = buildGroupsMutex(hashes, *dataWorkers)
 		}
+	}
+
+	if *dataWorkers >= 1 {
 		fmt.Printf("hashGroupTime: %f\n", time.Since(start).Seconds())
 		printHashGroups(groups)
 	}
 
-	_ = compWorkers
+	if *compWorkers >= 1 {
+		compStart := time.Now()
+		classes := compareTreesSequential(roots, groups)
+		fmt.Printf("compareTreeTime: %f\n", time.Since(compStart).Seconds())
+		printTreeGroups(classes)
+	}
 }
