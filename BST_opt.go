@@ -161,6 +161,36 @@ func buildGroupsChannel(hashes []int, workers int) map[int][]int {
 	return groups
 }
 
+// buildGroupsMutex has `workers` goroutines update a shared map, each acquiring
+// a single mutex around its insertion.
+func buildGroupsMutex(hashes []int, workers int) map[int][]int {
+	n := len(hashes)
+	if workers <= 1 {
+		return buildGroupsSequential(hashes)
+	}
+	if workers > n {
+		workers = n
+	}
+
+	groups := make(map[int][]int)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(worker int) {
+			defer wg.Done()
+			for id := worker; id < n; id += workers {
+				h := hashes[id]
+				mu.Lock()
+				groups[h] = append(groups[h], id)
+				mu.Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+	return groups
+}
+
 // printHashGroups prints every hash group with more than one tree, sorted by
 // hash and then by ID, in the form "<hash>: <id> <id> ...".
 func printHashGroups(groups map[int][]int) {
@@ -245,8 +275,7 @@ func main() {
 		case *dataWorkers == 1:
 			groups = buildGroupsChannel(hashes, *hashWorkers)
 		default:
-			// hash-workers=i, data-workers=i: mutex map (Phase H).
-			groups = buildGroupsSequential(hashes)
+			groups = buildGroupsMutex(hashes, *dataWorkers)
 		}
 		fmt.Printf("hashGroupTime: %f\n", time.Since(start).Seconds())
 		printHashGroups(groups)
