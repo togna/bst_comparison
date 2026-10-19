@@ -358,6 +358,113 @@ func compareTreesGoroutinePerPair(roots []*Node, groups map[int][]int) [][]int {
 	return collectClasses(uf, groups, len(roots))
 }
 
+// comparisonPair is a pair of tree IDs to compare.
+type comparisonPair struct {
+	a, b int
+}
+
+// workBuffer is a bounded buffer of comparison pairs. Producers block when the
+// buffer is full and consumers block when it is empty; both wait on condition
+// variables rather than spinning.
+type workBuffer struct {
+	mu       sync.Mutex
+	notFull  *sync.Cond
+	notEmpty *sync.Cond
+	items    []comparisonPair
+	capacity int
+	closed   bool
+}
+
+func newWorkBuffer(capacity int) *workBuffer {
+	b := &workBuffer{capacity: capacity}
+	b.notFull = sync.NewCond(&b.mu)
+	b.notEmpty = sync.NewCond(&b.mu)
+	return b
+}
+
+// push adds a pair, blocking while the buffer is full.
+func (b *workBuffer) push(p comparisonPair) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for len(b.items) == b.capacity {
+		b.notFull.Wait()
+	}
+	b.items = append(b.items, p)
+	b.notEmpty.Signal()
+}
+
+// pop removes a pair, blocking while the buffer is empty and not yet closed.
+// It returns ok=false once the buffer is closed and drained.
+func (b *workBuffer) pop() (comparisonPair, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for len(b.items) == 0 && !b.closed {
+		b.notEmpty.Wait()
+	}
+	if len(b.items) == 0 {
+		return comparisonPair{}, false
+	}
+	p := b.items[0]
+	b.items = b.items[1:]
+	b.notFull.Signal()
+	return p, true
+}
+
+// close marks the buffer closed and wakes all waiting consumers.
+func (b *workBuffer) close() {
+	b.mu.Lock()
+	b.closed = true
+	b.notEmpty.Broadcast()
+	b.mu.Unlock()
+}
+
+// compareTreesPool feeds candidate pairs through a bounded buffer of capacity
+// `workers` to a pool of `workers` goroutines. Results are merged under a
+// mutex.
+func compareTreesPool(roots []*Node, groups map[int][]int, workers int) [][]int {
+	if workers <= 1 {
+		return compareTreesSequential(roots, groups)
+	}
+
+	buf := newWorkBuffer(workers)
+	uf := newUnionFind(len(roots))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				p, ok := buf.pop()
+				if !ok {
+					return
+				}
+				if equalTrees(roots[p.a], roots[p.b]) {
+					mu.Lock()
+					uf.union(p.a, p.b)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	for _, ids := range groups {
+		if len(ids) < 2 {
+			continue
+		}
+		for i := 0; i < len(ids); i++ {
+			for j := i + 1; j < len(ids); j++ {
+				buf.push(comparisonPair{a: ids[i], b: ids[j]})
+			}
+		}
+	}
+	buf.close()
+	wg.Wait()
+
+	return collectClasses(uf, groups, len(roots))
+}
+
 // parseInput reads path and returns one slice of ints per non-empty line.
 // Each line is one BST, values in the order provided.
 func parseInput(path string) ([][]int, error) {
@@ -436,7 +543,7 @@ func main() {
 		if *compWorkers == 1 {
 			classes = compareTreesSequential(roots, groups)
 		} else {
-			classes = compareTreesGoroutinePerPair(roots, groups)
+			classes = compareTreesPool(roots, groups, *compWorkers)
 		}
 		fmt.Printf("compareTreeTime: %f\n", time.Since(compStart).Seconds())
 		printTreeGroups(classes)
