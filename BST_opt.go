@@ -281,8 +281,37 @@ func equalTrees(a, b *Node) bool {
 	return len(sa) == 0 && len(sb) == 0
 }
 
-// compareTreesSequential compares all pairs within each multi-tree hash group
-// in the main thread and returns equivalence classes with more than one tree.
+// collectClasses groups the IDs that belong to a multi-tree hash group by their
+// union-find root, returning equivalence classes with more than one tree.
+func collectClasses(uf *unionFind, groups map[int][]int, n int) [][]int {
+	inGroup := make(map[int]bool)
+	for _, ids := range groups {
+		if len(ids) < 2 {
+			continue
+		}
+		for _, id := range ids {
+			inGroup[id] = true
+		}
+	}
+
+	byRoot := make(map[int][]int)
+	for id := 0; id < n; id++ {
+		if inGroup[id] {
+			r := uf.find(id)
+			byRoot[r] = append(byRoot[r], id)
+		}
+	}
+
+	var classes [][]int
+	for _, ids := range byRoot {
+		if len(ids) > 1 {
+			classes = append(classes, ids)
+		}
+	}
+	return classes
+}
+
+// compareTreesSequential compares all pairs within each multi-tree hash group.
 func compareTreesSequential(roots []*Node, groups map[int][]int) [][]int {
 	uf := newUnionFind(len(roots))
 	for _, ids := range groups {
@@ -297,32 +326,36 @@ func compareTreesSequential(roots []*Node, groups map[int][]int) [][]int {
 			}
 		}
 	}
+	return collectClasses(uf, groups, len(roots))
+}
 
-	byRoot := make(map[int][]int)
-	// Collect only IDs that belong to a multi-tree hash group.
-	inGroup := make(map[int]bool)
+// compareTreesGoroutinePerPair spawns one goroutine per candidate pair within
+// each multi-tree hash group. Results are merged under a mutex.
+func compareTreesGoroutinePerPair(roots []*Node, groups map[int][]int) [][]int {
+	uf := newUnionFind(len(roots))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
 	for _, ids := range groups {
 		if len(ids) < 2 {
 			continue
 		}
-		for _, id := range ids {
-			inGroup[id] = true
+		for i := 0; i < len(ids); i++ {
+			for j := i + 1; j < len(ids); j++ {
+				wg.Add(1)
+				go func(a, b int) {
+					defer wg.Done()
+					if equalTrees(roots[a], roots[b]) {
+						mu.Lock()
+						uf.union(a, b)
+						mu.Unlock()
+					}
+				}(ids[i], ids[j])
+			}
 		}
 	}
-	for id := range roots {
-		if inGroup[id] {
-			r := uf.find(id)
-			byRoot[r] = append(byRoot[r], id)
-		}
-	}
-
-	var classes [][]int
-	for _, ids := range byRoot {
-		if len(ids) > 1 {
-			classes = append(classes, ids)
-		}
-	}
-	return classes
+	wg.Wait()
+	return collectClasses(uf, groups, len(roots))
 }
 
 // parseInput reads path and returns one slice of ints per non-empty line.
@@ -399,7 +432,12 @@ func main() {
 
 	if *compWorkers >= 1 {
 		compStart := time.Now()
-		classes := compareTreesSequential(roots, groups)
+		var classes [][]int
+		if *compWorkers == 1 {
+			classes = compareTreesSequential(roots, groups)
+		} else {
+			classes = compareTreesGoroutinePerPair(roots, groups)
+		}
 		fmt.Printf("compareTreeTime: %f\n", time.Since(compStart).Seconds())
 		printTreeGroups(classes)
 	}
