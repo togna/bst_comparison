@@ -191,6 +191,98 @@ func buildGroupsMutex(hashes []int, workers int) map[int][]int {
 	return groups
 }
 
+// buildGroupsDataWorkersChannel has `hashWorkers` producer goroutines send
+// (hash, id) pairs to a shared channel that `dataWorkers` consumer goroutines
+// drain, appending under a single map mutex.
+func buildGroupsDataWorkersChannel(hashes []int, hashWorkers, dataWorkers int) map[int][]int {
+	n := len(hashes)
+	if hashWorkers <= 1 || dataWorkers < 1 || n == 0 {
+		return buildGroupsSequential(hashes)
+	}
+	if hashWorkers > n {
+		hashWorkers = n
+	}
+	if dataWorkers > n {
+		dataWorkers = n
+	}
+
+	ch := make(chan hashPair)
+	groups := make(map[int][]int)
+	var mu sync.Mutex
+
+	var producers sync.WaitGroup
+	producers.Add(hashWorkers)
+	for w := 0; w < hashWorkers; w++ {
+		go func(worker int) {
+			defer producers.Done()
+			for id := worker; id < n; id += hashWorkers {
+				ch <- hashPair{hash: hashes[id], id: id}
+			}
+		}(w)
+	}
+
+	var consumers sync.WaitGroup
+	consumers.Add(dataWorkers)
+	for w := 0; w < dataWorkers; w++ {
+		go func() {
+			defer consumers.Done()
+			for p := range ch {
+				mu.Lock()
+				groups[p.hash] = append(groups[p.hash], p.id)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	go func() {
+		producers.Wait()
+		close(ch)
+	}()
+	consumers.Wait()
+	return groups
+}
+
+// buildGroupsFineGrained has `dataWorkers` goroutines update the map directly.
+// Because Go maps are not safe for concurrent writes, the destination is stored
+// as one slice per hash value (hash ∈ [0,1000)) guarded by a per-hash mutex, so
+// different hashes can be updated concurrently.
+func buildGroupsFineGrained(hashes []int, dataWorkers int) map[int][]int {
+	n := len(hashes)
+	if dataWorkers <= 1 || n == 0 {
+		return buildGroupsSequential(hashes)
+	}
+	if dataWorkers > n {
+		dataWorkers = n
+	}
+
+	const hashRange = 1000
+	idsByHash := make([][]int, hashRange)
+	locks := make([]sync.Mutex, hashRange)
+
+	var wg sync.WaitGroup
+	wg.Add(dataWorkers)
+	for w := 0; w < dataWorkers; w++ {
+		go func(worker int) {
+			defer wg.Done()
+			for id := worker; id < n; id += dataWorkers {
+				h := hashes[id]
+				locks[h].Lock()
+				idsByHash[h] = append(idsByHash[h], id)
+				locks[h].Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	groups := make(map[int][]int)
+	for h, ids := range idsByHash {
+		if len(ids) > 0 {
+			groups[h] = ids
+		}
+	}
+	return groups
+}
+
 // printHashGroups prints every hash group with more than one tree, sorted by
 // hash and then by ID, in the form "<hash>: <id> <id> ...".
 func printHashGroups(groups map[int][]int) {
@@ -527,6 +619,13 @@ func main() {
 			groups = buildGroupsSequential(hashes)
 		case *dataWorkers == 1:
 			groups = buildGroupsChannel(hashes, *hashWorkers)
+		case *dataWorkers > 1 && *dataWorkers < *hashWorkers:
+			// Extra credit: hash-workers=i, data-workers=j (i>j>1).
+			if os.Getenv("BST_DATA_MODE") == "lock" {
+				groups = buildGroupsFineGrained(hashes, *dataWorkers)
+			} else {
+				groups = buildGroupsDataWorkersChannel(hashes, *hashWorkers, *dataWorkers)
+			}
 		default:
 			groups = buildGroupsMutex(hashes, *dataWorkers)
 		}
