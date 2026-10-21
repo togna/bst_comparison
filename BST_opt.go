@@ -593,6 +593,8 @@ func main() {
 	dataWorkers := flag.Int("data-workers", 0, "number of workers to update the hash map")
 	compWorkers := flag.Int("comp-workers", 0, "number of goroutines to compare trees")
 	inputPath := flag.String("input", "", "path to input file")
+	dataMode := flag.String("data-mode", "channel", "extra-credit data-worker mode for i>j>1: channel (default) or lock")
+	compareMode := flag.String("compare-mode", "pool", "comparison mode for comp-workers>1: pool (default) or unbounded")
 	flag.Parse()
 
 	trees, err := parseInput(*inputPath)
@@ -621,7 +623,7 @@ func main() {
 			groups = buildGroupsChannel(hashes, *hashWorkers)
 		case *dataWorkers > 1 && *dataWorkers < *hashWorkers:
 			// Extra credit: hash-workers=i, data-workers=j (i>j>1).
-			if os.Getenv("BST_DATA_MODE") == "lock" {
+			if *dataMode == "lock" {
 				groups = buildGroupsFineGrained(hashes, *dataWorkers)
 			} else {
 				groups = buildGroupsDataWorkersChannel(hashes, *hashWorkers, *dataWorkers)
@@ -641,6 +643,8 @@ func main() {
 		var classes [][]int
 		if *compWorkers == 1 {
 			classes = compareTreesSequential(roots, groups)
+		} else if *compareMode == "unbounded" {
+			classes = compareTreesGoroutinePerPair(roots, groups)
 		} else {
 			classes = compareTreesPool(roots, groups, *compWorkers)
 		}
